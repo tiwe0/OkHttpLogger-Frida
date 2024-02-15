@@ -1,6 +1,72 @@
-# OkHttpLogger-Frida
-- Frida 实现拦截okhttp的脚本
+# OkHttpLogger-Frida-Interface
 
+本项目基于原项目[OkHttpLogger-Frida]()，主要用于提供编程接口，而非直接使用，主要做的修改如下：
+
+- [ ] 自动检测是否使用okhttp
+- [x] 自动检测混淆，并修补混淆 
+- [x] 修复潜在的内存用尽问题 (删除了历史功能，这个功能后续换个实现)
+- [x] 包信息以Json格式返回，适合编程而非直接阅读
+
+### 使用说明
+> 1️⃣ 首先将 `okhttpfind.dex` 拷贝到 `/data/local/tmp/` 目录下。
+>  [okhttpfind.dex源码链接](https://github.com/siyujie/okhttp_find)
+> 2️⃣ 编写你的应用，并在应用中使用接口
+>  除了使用 rpc.exports 提供的接口，需要绑定一个回调函数处理包信息
+
+例子:
+
+```JavaScript
+const frida = require('frida');
+const fs = require('fs');
+const path = require('path');
+const util = require('util');
+
+const readFile = util.promisify(fs.readFile);
+
+let session, script;
+async function run() {
+  const source = await readFile(path.join(__dirname, 'okhttp_poker.js'), 'utf8');
+  session = await frida.attach('xxx');
+  script = await session.createScript(source);
+  script.message.connect(onMessage);
+  await script.load();
+}
+
+run().catch(onError);
+
+function onError(error) {
+  console.error(error.stack);
+}
+
+function onMessage(message, data) {
+  console.log(message)
+}
+```
+
+类似的python代码:
+
+```python
+import codecs
+import frida
+
+def on_message(message, data):
+    if message['type'] == 'send':
+        print(message['payload'])
+    elif message['type'] == 'error':
+        print(message['stack'])
+
+session = frida.attach('xxx')
+with codecs.open('./okhttp_poker.js', 'r', 'utf-8') as f:
+    source = f.read()
+script = session.create_script(source)
+script.on('message', on_message)
+script.load()
+```
+
+### 免责声明
+同原作者的免责声明
+
+以下是原README:
 
 ### 使用说明
 

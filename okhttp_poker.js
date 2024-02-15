@@ -7,8 +7,6 @@
     find()                                         检查是否使用了Okhttp & 是否可能被混淆 & 寻找okhttp3关键类及函数
     switchLoader(\"okhttp3.OkHttpClient\")         参数：静态分析到的okhttpclient类名
     hold()                                         开启HOOK拦截
-    history()                                      打印可重新发送的请求				
-    resend(index)                                  重新发送请求		
 
 备注 ： okhtpfind.dex 内包含了 更改了包名的okio以及Gson，以及Java写的寻找okhttp特征的代码。
 okhttpfind.dex 源码链接 https://github.com/siyujie/okhttp_find
@@ -17,6 +15,8 @@ okhttpfind.dex 源码链接 https://github.com/siyujie/okhttp_find
 也可以缓存下来每一个请求的call对象，进行再次请求，所以选择了此处进行hook。
                         	
 */
+
+// 这部分用于反混淆
 var Cls_Call = "okhttp3.Call";
 var Cls_CallBack = "okhttp3.Callback";
 var Cls_OkHttpClient = "okhttp3.OkHttpClient";
@@ -53,11 +53,12 @@ var M_rspBody_create = "create";
 var M_rspBody_source = "source";
 var M_rsp_newBuilder = "newBuilder";
 
-//----------------------------------
+// 这部分用于与Java对接
 var JavaStringWapper = null;
 var JavaIntegerWapper = null;
 var JavaStringBufferWapper = null;
 var GsonWapper = null;
+var JsonObjectWapper = null;
 var ListWapper = null;
 var ArrayListWapper = null;
 var ArraysWapper = null;
@@ -71,8 +72,8 @@ var OkHttpClientWapper = null;
 var ResponseBodyWapper = null;
 var BufferWapper = null;
 var Utils = null;
-//----------------------------------
-var CallCache = []
+
+// 这部分用于脚本内部使用
 var hookedArray = []
 var filterArray = ["JPG", "jpg", "PNG", "png", "WEBP", "webp", "JPEG", "jpeg", "GIF", "gif",".zip", ".data"]
 
@@ -81,17 +82,12 @@ function buildNewResponse(responseObject) {
     var newResponse = null;
     Java.perform(function () {
         try {
-            var logString = JavaStringBufferWapper.$new()
+            var logJsonObject = JsonObjectWapper.$new()
 
-            logString.append("").append("\n");
-            logString.append("┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────").append("\n");
+            newResponse = printAll(responseObject, logJsonObject)
 
-            newResponse = printAll(responseObject, logString)
-
-            logString.append("└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────").append("\n");
-            logString.append("").append("\n");
-
-            console.log(logString)
+            send(logJsonObject.toString())
+            logJsonObject.$dispose()
         } catch (error) {
             console.log("printAll ERROR : " + error);
         }
@@ -100,27 +96,29 @@ function buildNewResponse(responseObject) {
 }
 
 
-function printAll(responseObject, logString) {
+function printAll(responseObject, JsonObject) {
     try {
         var request = getFieldValue(responseObject, F_rsp_request)
-        printerRequest(request, logString)
+        var requestJsonObject = JsonObjectWapper.$new()
+        printerRequest(request, requestJsonObject)
+        JsonObject.add("request", requestJsonObject)
     } catch (error) {
         console.log("print request error : ", error.stack)
         return responseObject;
     }
-    var newResponse = printerResponse(responseObject, logString)
+    var responseJsonObject = JsonObjectWapper.$new()
+    var newResponse = printerResponse(responseObject, responseJsonObject)
+    JsonObject.add("response", responseJsonObject)
     return newResponse;
 }
 
 
-function printerRequest(request, logString) {
+function printerRequest(request, r) {
     var defChatset = CharsetWapper.forName("UTF-8")
     //URL
     var httpUrl = getFieldValue(request, F_req_url)
-    logString.append("| URL: " + httpUrl).append("\n")
-    logString.append("|").append("\n")
-    logString.append("| Method: " + getFieldValue(request, F_req_method)).append("\n")
-    logString.append("|").append("\n")
+    r.addProperty("url", httpUrl.toString())
+    r.addProperty("Method", getFieldValue(request, F_req_method).toString())
     var requestBody = getFieldValue(request, F_req_body);
     var hasRequestBody = true
     if (null == requestBody) {
@@ -131,42 +129,36 @@ function printerRequest(request, logString) {
     var headersList = headersToList(requestHeaders)
     var headersSize = getHeaderSize(headersList)
 
-    logString.append("| Request Headers: ").append("" + headersSize).append("\n")
+    var headerJsonObject = JsonObjectWapper.$new()
+    headerJsonObject.addProperty("size", headersSize.toString())
     if (hasRequestBody) {
         var requestBody = getWrapper(requestBody)
         var contentType = requestBody[M_reqbody_contentType]()
         if (null != contentType) {
-            logString.append("|   ┌─" + "Content-Type: " + contentType).append("\n")
+            headerJsonObject.addProperty("Content-Type", contentType.toString())
         }
         var contentLength = requestBody[M_reqbody_contentLength]()
-        if (contentLength != -1) {
-            var tag = headersSize == 0 ? "└─" : "┌─"
-            logString.append("|   " + tag + "Content-Length: " + contentLength).append("\n")
-        }
+        headerJsonObject.addProperty("Content-Length", contentLength.toString())
     }
-    if (headersSize == 0) {
-        logString.append("|     no headers").append("\n")
-    }
+
     for (var i = 0; i < headersSize; i++) {
         var name = getHeaderName(headersList, i)
         if (!JavaStringWapper.$new("Content-Type").equalsIgnoreCase(name) && !JavaStringWapper.$new("Content-Length").equalsIgnoreCase(name)) {
             var value = getHeaderValue(headersList, i)
-            var tag = i == (headersSize - 1) ? "└─" : "┌─"
-            logString.append("|   " + tag + name + ": " + value).append("\n")
+            headerJsonObject.addProperty(name.toString(), value.toString())
         }
     }
+    r.add("headers", headerJsonObject)
+
     var shielded = filterUrl(httpUrl.toString())
     if (shielded) {
-        logString.append("|" + "     File Request Body Omit.....").append("\n")
         return;
     }
-    logString.append("|").append("\n")
     if (!hasRequestBody) {
-        logString.append("|" + "--> END ").append("\n")
+        ;
     } else if (bodyEncoded(headersList)) {
-        logString.append("|" + "--> END  (encoded body omitted > bodyEncoded)").append("\n")
+        ;
     } else {
-        logString.append("| Request Body:").append("\n")
         var buffer = BufferWapper.$new()
         requestBody[M_reqbody_writeTo](buffer)
         var reqByteString = getByteString(buffer)
@@ -182,25 +174,18 @@ function printerRequest(request, logString) {
         //LOG Request Body
         try {
             if (isPlaintext(reqByteString)) {
-                logString.append(splitLine(readBufferString(reqByteString, charset), "|   ")).append("\n")
-                logString.append("|").append("\n")
-                logString.append("|" + "--> END ").append("\n")
+                r.addProperty("content", readBufferString(reqByteString, charset).toString())
             } else {
-                logString.append(splitLine(hexToUtf8(reqByteString.hex()), "|   ")).append("\n")
-                logString.append("|").append("\n");
-                logString.append("|" + "--> END  (binary body omitted -> isPlaintext)").append("\n")
+                r.addProperty("content-hex", hexToUtf8(reqByteString.hex()).toString())
             }
         } catch (error) {
-            logString.append(splitLine(hexToUtf8(reqByteString.hex()), "|   ")).append("\n")
-            logString.append("|").append("\n");
-            logString.append("|" + "--> END  (binary body omitted -> isPlaintext)").append("\n")
+            r.addProperty("content-hex", hexToUtf8(reqByteString.hex()).toString())
         }
     }
-    logString.append("|").append("\n");
 }
 
 
-function printerResponse(response, logString) {
+function printerResponse(response, responseJsonObject) {
     var newResponse = null;
     try {
         var defChatset = CharsetWapper.forName("UTF-8")
@@ -209,40 +194,34 @@ function printerResponse(response, logString) {
         var url = getFieldValue(request, F_req_url)
         var shielded = filterUrl(url.toString())
         if (shielded) {
-            logString.append("|" + "     File Response Body Omit.....").append("\n")
             return response;
         }
         //URL
-        logString.append("| URL: " + url).append("\n")
-        logString.append("|").append("\n")
-        logString.append("| Status Code: " + getFieldValue(response, F_rsp_code) + " / " + getFieldValue(response, F_rsp_message)).append("\n")
-        logString.append("|").append("\n")
+        responseJsonObject.addProperty("url", url.toString())
+        responseJsonObject.addProperty("status code", getFieldValue(response, F_rsp_code) + " / " + getFieldValue(response, F_rsp_message))
+
         var responseBodyObj = getFieldValue(response, F_rsp_body)
         var responseBody = getWrapper(responseBodyObj)
         var contentLength = responseBody[M_rspBody_contentLength]()
         //Headers
+        var header = JsonObjectWapper.$new()
         var resp_headers = getFieldValue(response, F_rsp_headers)
         var respHeadersList = headersToList(resp_headers)
         var respHeaderSize = getHeaderSize(respHeadersList)
-        logString.append("| Response Headers: ").append("" + respHeaderSize).append("\n")
-        if (respHeaderSize == 0) {
-            logString.append("|     no headers").append("\n")
-        }
+        header.addProperty("size", respHeaderSize.toString())
+
         for (var i = 0; i < respHeaderSize; i++) {
-            var tag = i == (respHeaderSize - 1) ? "└─" : "┌─"
-            logString.append("|   " + tag + getHeaderName(respHeadersList, i) + ": " + getHeaderValue(respHeadersList, i)).append("\n")
+            header.addProperty(getHeaderName(respHeadersList, i).toString(), getHeaderValue(respHeadersList, i).toString())
         }
+        responseJsonObject.add("headers", header)
         //Body
         var content = "";
         var nobody = !hasBody(response, respHeadersList)
         if (nobody) {
-            logString.append("| No Response Body : " + response).append("\n")
-            logString.append("|" + "<-- END HTTP").append("\n")
+            ;
         } else if (bodyEncoded(respHeadersList)) {
-            logString.append("|" + "<-- END HTTP (encoded body omitted)").append("\n")
+            ;
         } else {
-            logString.append("| ").append("\n");
-            logString.append("| Response Body:").append("\n")
             var source = responseBody[M_rspBody_source]()
             var rspByteString = getByteString(source)
             var charset = defChatset
@@ -274,22 +253,18 @@ function printerResponse(response, logString) {
             newResponse = newBuilder[M_rsp$builder_build]()
 
             if (!isPlaintext(rspByteString)) {
-                logString.append("|" + "<-- END HTTP (binary body omitted)").append("\n");
+                ;
             }
             if (contentLength != 0) {
                 try {
                     var content = readBufferString(rspByteString, charset)
-                    logString.append(splitLine(content, "|   ")).append("\n")
+                    responseJsonObject.addProperty("content", content.toString())
                 } catch (error) {
-                    logString.append(splitLine(hexToUtf8(rspByteString.hex()), "|   ")).append("\n")
+                    responseJsonObject.addProperty("content-hex", hexToUtf8(rspByteString.hex()).toString())
                 }
-
-                logString.append("| ").append("\n");
             }
-            logString.append("|" + "<-- END HTTP").append("\n");
         }
     } catch (error) {
-        logString.append("print response error : " + error).append("\n")
         if (null == newResponse) {
             return response;
         }
@@ -318,6 +293,7 @@ function getFieldValue(object, fieldName) {
         return null;
     }
     var FieldClazz = Java.use(fieldValue.$className)
+    // console.log(FieldClazz.toString())
     var fieldValueWapper = Java.cast(fieldValue, FieldClazz)
     return fieldValueWapper
 }
@@ -537,49 +513,6 @@ function checkClass(name) {
 }
 
 /**
-* print request history
-*/
-function history() {
-    Java.perform(function () {
-        try {
-            console.log("")
-            console.log("History Size : " + CallCache.length)
-            for (var i = 0; i < CallCache.length; i++) {
-                var call = CallCache[i]
-                if ("" != M_Call_request) {
-                    console.log("-----> index[" + i + "]" + " >> " + call[M_Call_request]())
-                } else {
-                    console.log("-----> index[" + i + "]" + "    ????  M_Call_execute = \"\"")
-                }
-                console.log("")
-            }
-            console.log("")
-        } catch (error) {
-            console.log(error)
-        }
-    })
-}
-
-/**
-* resend request
-*/
-function resend(index) {
-    Java.perform(function () {
-        try {
-            console.log("resend >> " + index)
-            var call = CallCache[index]
-            if ("" != M_Call_execute) {
-                call[M_Call_execute]()
-            } else {
-                console.log("M_Call_execute = null")
-            }
-        } catch (error) {
-            console.log("Error : " + error)
-        }
-    })
-}
-
-/**
  * 开启HOOK拦截
  */
 function hold() {
@@ -591,6 +524,7 @@ function hold() {
         JavaStringBufferWapper = Java.use("java.lang.StringBuilder")
         JavaIntegerWapper = Java.use("java.lang.Integer")
         GsonWapper = Java.use("com.singleman.gson.Gson")
+        JsonObjectWapper = Java.use("com.singleman.gson.JsonObject")
         ListWapper = Java.use("java.util.List")
         ArraysWapper = Java.use("java.util.Arrays")
         ArrayListWapper = Java.use("java.util.ArrayList")
@@ -608,11 +542,11 @@ function hold() {
         //Start Hook
         OkHttpClientWapper[M_Client_newCall].overload(Cls_Request).implementation = function (request) {
             var call = this[M_Client_newCall](request)
-            try {
-                CallCache.push(call["clone"]())
-            } catch (error) {
-                console.log("not fount clone method!")
-            }
+            // try {
+            //     CallCache.push(call["clone"]())
+            // } catch (error) {
+            //     console.log("not fount clone method!")
+            // }
             var realCallClassName = call.$className
             if (!alreadyHook(realCallClassName)) {
                 hookedArray.push(realCallClassName)
@@ -664,6 +598,7 @@ function find() {
     Java.perform(function () {
         ArraysWapper = Java.use("java.util.Arrays")
         ArrayListWapper = Java.use("java.util.ArrayList")
+        var fuzzJsonObject = JsonObjectWapper.$new()
         var isSupport = false;
         var clz_Protocol = null;
         try {
@@ -756,9 +691,14 @@ function find() {
                 field.setAccessible(true);
                 var name = field.getName()
                 var value = field.get(null)
-                console.log("var " + name + " = \"" + value + "\";")
+                var stmt = `var ${name} = "${value}";`
+                fuzzJsonObject.addProperty(name.toString(), value.toString())
+                console.log(stmt)
+                eval(stmt)
             }
             console.log("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~Find Complete~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+            send(fuzzJsonObject.toString())
+            fuzzJsonObject.$dispose()
 
         } catch (error) {
             console.log(error)
@@ -773,17 +713,13 @@ function main() {
     Java.perform(function () {
         Java.openClassFile("/data/local/tmp/okhttpfind.dex").load()
         var version = Java.use("com.singleman.SingleMan").class.getDeclaredField("version").get(null)
-        console.log("");
-        console.log("------------------------- OkHttp Poker by SingleMan [" + version + "]------------------------------------");
-        console.log("API:")
-        console.log("   >>>  find()                                         检查是否使用了Okhttp & 是否可能被混淆 & 寻找okhttp3关键类及函数");
-        console.log("   >>>  switchLoader(\"okhttp3.OkHttpClient\")           参数：静态分析到的okhttpclient类名");
-        console.log("   >>>  hold()                                         开启HOOK拦截");
-        console.log("   >>>  history()                                      打印可重新发送的请求");
-        console.log("   >>>  resend(index)                                  重新发送请求");
-        console.log("----------------------------------------------------------------------------------------");
-
+        console.log("dex loaded, version: " + version)
     })
+    find()
 }
 
-setImmediate(main)
+rpc.exports = {
+    init: main,
+    find: find,
+    hold: hold
+}
